@@ -7,9 +7,10 @@ use winit::{
 };
 use winit_input_helper::WinitInputHelper;
 
-const SIZE: usize = 1024 * 5;
+const SIZE: usize = 1024;
 
-mod game;
+mod conway;
+mod physarum;
 mod gpu;
 mod renderer;
 
@@ -23,7 +24,7 @@ fn main() {
     let gpu = Rc::new(block_on(gpu::Gpu::new(&window)));
 
     let mut state = renderer::State::new(gpu.clone(), window.inner_size(), SIZE, SIZE);
-    let game = game::Game::new(gpu.clone(), SIZE, SIZE);
+    let game = physarum::Game::new(gpu.clone(), SIZE, SIZE);
 
     let now = std::time::Instant::now();
     let mut frames_count = 0;
@@ -122,8 +123,6 @@ fn main() {
                     );
                     gpu.queue.submit(Some(encoder.finish()));
                 }
-
-                game.swap();
             }
             Event::MainEventsCleared => {
                 // RedrawRequested will only trigger once, unless we manually

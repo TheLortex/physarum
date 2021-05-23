@@ -15,7 +15,12 @@ layout (set = 0, binding = 2) writeonly buffer GridO {
     uint v[];
 } grid_output;
 
-uint next() {
+layout (set = 0, binding = 3) writeonly buffer ImageO {
+    uint v[];
+ } image_output;
+
+
+void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
     uint count = 0;
@@ -24,10 +29,8 @@ uint next() {
     count += grid_input.v[height.v*(x - 1) + (y+1)] + grid_input.v[height.v * x + (y+1)] + grid_input.v[height.v*(x + 1) + (y+1)];
 
     uint status = uint((count == 3) || ((grid_input.v[height.v*x + y] == 1) && (count == 2)));
+    uint color = status > 0 ? 0x88ddffff : 0;
 
-    return status;
-}
-
-void main() {
-    grid_output.v[height.v*gl_GlobalInvocationID.x + gl_GlobalInvocationID.y] = next();
+    grid_output.v[height.v*x + y] = status;
+    image_output.v[height.v*x + y] = color;
 }

@@ -1,5 +1,4 @@
 use rand::Rng;
-use std::convert::TryInto;
 use std::rc::Rc;
 use wgpu::util::DeviceExt;
 
@@ -11,12 +10,9 @@ pub struct Game {
     compute_bind_group: wgpu::BindGroup,
     input_buffer: wgpu::Buffer,
     output_buffer: wgpu::Buffer,
-    staging_buffer: wgpu::Buffer,
     pub image_buffer: wgpu::Buffer,
     width: usize,
     height: usize,
-    compute_render_pipeline: wgpu::ComputePipeline,
-    compute_render_bind_group: wgpu::BindGroup,
 }
 
 fn load_compute_shader(
@@ -44,12 +40,6 @@ impl Game {
             &mut compiler,
             "conway.comp",
             include_str!("conway.comp"),
-        );
-        let cs_render_module = load_compute_shader(
-            &gpu.device,
-            &mut compiler,
-            "conway_render.comp",
-            include_str!("conway_render.comp"),
         );
 
         let compute_bind_group_layout =
@@ -79,6 +69,16 @@ impl Game {
                         },
                         wgpu::BindGroupLayoutEntry {
                             binding: 2,
+                            visibility: wgpu::ShaderStage::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
                             visibility: wgpu::ShaderStage::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -135,13 +135,6 @@ impl Game {
                 usage: wgpu::BufferUsage::STORAGE | wgpu::BufferUsage::COPY_SRC,
             });
 
-        let staging_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (width * height * 4) as u64,
-            usage: wgpu::BufferUsage::MAP_READ | wgpu::BufferUsage::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         let compute_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("compute_bind_group"),
             entries: &[
@@ -156,6 +149,10 @@ impl Game {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: output_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: image_buffer.as_entire_binding(),
                 },
             ],
             layout: &compute_bind_group_layout,
@@ -178,94 +175,15 @@ impl Game {
                     module: &cs_module,
                 });
 
-        // ##################""
-
-        let compute_render_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("compute_bind_group"),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: height_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: output_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: image_buffer.as_entire_binding(),
-                },
-            ],
-            layout: &compute_bind_group_layout,
-        });
-
-        let compute_render_bind_group_layout =
-            gpu.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("compute_bind_group_layout"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStage::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStage::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStage::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                    ],
-                });
-
-        let compute_render_pipeline_layout =
-            gpu.device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("Compute render pipeline layout"),
-                    bind_group_layouts: &[&compute_render_bind_group_layout],
-                    push_constant_ranges: &[],
-                });
-
-        let compute_render_pipeline =
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Compute render Pipeline"),
-                    layout: Some(&compute_render_pipeline_layout),
-                    entry_point: "main",
-                    module: &cs_render_module,
-                });
-
         Self {
             gpu,
             compute_pipeline,
             compute_bind_group,
             input_buffer,
             output_buffer,
-            staging_buffer,
             image_buffer,
             width,
             height,
-            compute_render_pipeline,
-            compute_render_bind_group,
         }
     }
 
@@ -286,52 +204,6 @@ impl Game {
             compute_pass.dispatch((self.width / 32) as u32, (self.height / 32) as u32, 1);
         }
 
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Compute render pass"),
-            });
-            compute_pass.set_pipeline(&self.compute_render_pipeline);
-            compute_pass.set_bind_group(0, &self.compute_render_bind_group, &[]);
-            compute_pass.dispatch((self.width / 32) as u32, (self.height / 32) as u32, 1);
-        }
-
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
-    }
-
-//    pub async fn get(&self) -> Vec<u8> {
-//        let mut encoder = self
-//            .gpu
-//            .device
-//            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-//        encoder.copy_buffer_to_buffer(
-//            &self.output_buffer,
-//            0,
-//            &self.staging_buffer,
-//            0,
-//            (self.width * self.height * 4) as u64,
-//        );
-//        self.gpu.queue.submit(Some(encoder.finish()));
-//
-//        let slice = self.staging_buffer.slice(..);
-//        let map = slice.map_async(wgpu::MapMode::Read);
-//        self.gpu.device.poll(wgpu::Maintain::Wait);
-//        map.await.unwrap();
-//        let result = slice
-//            .get_mapped_range()
-//            .chunks_exact(4)
-//            .map(|b| u32::from_ne_bytes(b.try_into().unwrap()))
-//            .collect::<Vec<u32>>();
-//
-//        self.staging_buffer.unmap();
-//
-//        result
-//    }
-
-    pub fn swap(&self) {
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(
             &self.output_buffer,
             0,
@@ -339,6 +211,7 @@ impl Game {
             0,
             (self.width * self.height * 4) as u64,
         );
-        self.gpu.queue.submit(Some(encoder.finish()));
+
+        self.gpu.queue.submit(std::iter::once(encoder.finish()));
     }
 }
