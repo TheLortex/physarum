@@ -7,7 +7,7 @@ use winit::{
 };
 use winit_input_helper::WinitInputHelper;
 
-const SIZE: usize = 1024;
+const SIZE: usize = 2048;
 
 mod conway;
 mod physarum;
@@ -111,7 +111,7 @@ fn main() {
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                     encoder.copy_buffer_to_texture(
                         wgpu::BufferCopyView {
-                            buffer: &game.image_buffer,
+                            buffer: &game.buffers.render,
                             layout,
                         },
                         wgpu::TextureCopyView {
