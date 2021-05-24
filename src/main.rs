@@ -17,6 +17,7 @@ mod renderer;
 fn main() {
     let mut input = WinitInputHelper::new();
     env_logger::init();
+
     let event_loop = EventLoop::new();
 
     let window = WindowBuilder::new().build(&event_loop).unwrap();
@@ -24,7 +25,7 @@ fn main() {
     let gpu = Rc::new(block_on(gpu::Gpu::new(&window)));
 
     let mut state = renderer::State::new(gpu.clone(), window.inner_size(), SIZE, SIZE);
-    let game = physarum::Game::new(gpu.clone(), SIZE, SIZE);
+    let mut game = physarum::Game::new(gpu.clone(), SIZE, SIZE);
 
     let now = std::time::Instant::now();
     let mut frames_count = 0;

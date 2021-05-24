@@ -26,6 +26,7 @@ layout (push_constant) uniform Settings
     float entropy;
     uint width;
     uint height;
+    uint time;
 } constants;
 
 

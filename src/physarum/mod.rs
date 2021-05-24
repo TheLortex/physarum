@@ -1,13 +1,16 @@
 use rand::Rng;
+use std::sync::Arc;
 use std::rc::Rc;
 use wgpu::util::DeviceExt;
 use zerocopy::AsBytes;
 
 use super::gpu;
 
+pub mod settings;
+
 #[repr(C)]
 #[derive(Copy, Clone, zerocopy::AsBytes)]
-struct Settings {
+struct Params {
     speed: f32,
     sensor_angle: f32,
     sensor_distance: f32,
@@ -18,30 +21,33 @@ struct Settings {
     entropy: f32,
     width: u32,
     height: u32,
+    time: u32,
 }
 
-impl Settings {
+impl Params {
     fn size() -> usize {
         std::mem::size_of::<Self>()
     }
-}
 
-impl Default for Settings {
-    fn default() -> Self {
+    fn of_settings(width: u32, height: u32, time: u32, settings: settings::Settings) -> Self {
+
         Self {
-            speed: 1.,
-            sensor_angle: 0.5,
-            sensor_distance: 5.,
-            sensor_size: 1,
-            rotation_speed: 0.5,
-            decay_ratio: 0.01,
-            diffusion_ratio: 0.1,
-            entropy: 0.,
-            width: 0,
-            height: 0,
+            width,
+            height,
+            time,
+            speed: settings.speed,
+            sensor_angle: settings.sensor_angle,
+            sensor_distance: settings.sensor_distance,
+            sensor_size: settings.sensor_size,
+            rotation_speed: settings.rotation_speed,
+            decay_ratio: settings.decay_ratio,
+            diffusion_ratio: settings.diffusion_ratio,
+            entropy: settings.entropy,
         }
     }
 }
+
+use std::sync::Mutex;
 
 pub struct Game {
     gpu: Rc<gpu::Gpu>,
@@ -50,7 +56,10 @@ pub struct Game {
     diffusion_pipeline: wgpu::ComputePipeline,
     diffusion_bind_group: wgpu::BindGroup,
     pub buffers: GameBuffers,
-    settings: Settings,
+    height: u32,
+    width: u32,
+    time: u32,
+    settings: Arc<Mutex<settings::Settings>>,
 }
 
 fn load_compute_shader(
@@ -70,7 +79,7 @@ fn load_compute_shader(
     })
 }
 
-const N_TRACERS: usize = 500_000;
+const N_TRACERS: usize = 2_000_000;
 
 pub struct GameBuffers {
     state: wgpu::Buffer,
@@ -87,7 +96,7 @@ impl GameBuffers {
             let mut rng = rand::thread_rng();
             for _ in 0..N_TRACERS {
                 let angle = rng.gen_range((0.)..(2. * 3.14)) as f32;
-                let distance = rng.gen_range((100.)..(400.)) as f32;
+                let distance = rng.gen_range((100.)..(700.)) as f32;
                 let x = (width / 2) as f32 + distance * angle.sin();
                 let y = (height / 2) as f32 + distance * angle.cos();
 
@@ -202,7 +211,7 @@ impl Game {
                     label: Some("Compute pipeline layout"),
                     bind_group_layouts: &[&compute_bind_group_layout],
                     push_constant_ranges: &[wgpu::PushConstantRange {
-                        range: 0..(Settings::size() as u32),
+                        range: 0..(Params::size() as u32),
                         stages: wgpu::ShaderStage::COMPUTE,
                     }],
                 });
@@ -314,7 +323,7 @@ impl Game {
                     label: Some("Compute pipeline layout"),
                     bind_group_layouts: &[&compute_bind_group_layout],
                     push_constant_ranges: &[wgpu::PushConstantRange {
-                        range: 0..(Settings::size() as u32),
+                        range: 0..(Params::size() as u32),
                         stages: wgpu::ShaderStage::COMPUTE,
                     }],
                 });
@@ -339,11 +348,14 @@ impl Game {
 
         let (diffusion_pipeline, diffusion_bind_group) = Self::get_diffusion_shader(&gpu, &buffers);
 
-        let settings = Settings {
-            width: width as u32,
-            height: height as u32,
-            ..Settings::default()
-        };
+        let settings = Arc::new(Mutex::new(settings::Settings::default()));
+
+
+        let settings_ref = settings.clone();
+        let _handle = settings::SettingsManager::new(move |new_value| {
+            let mut locked = settings_ref.lock().unwrap();
+            *locked = new_value;
+        }, settings::Settings::default()); 
 
         Self {
             gpu,
@@ -353,10 +365,25 @@ impl Game {
             diffusion_bind_group,
             buffers,
             settings,
+            width: width as u32,
+            height: height as u32,
+            time: 0,
         }
     }
 
-    pub fn step(&self) {
+    pub fn step(&mut self) {
+        self.time += 1;
+
+        let params = {
+            let settings = self.settings.lock().unwrap();
+            Params::of_settings (
+                self.width,
+                self.height,
+                self.time,
+                *settings,
+            )
+        };
+
         let mut encoder = self
             .gpu
             .device
@@ -370,7 +397,7 @@ impl Game {
             });
             compute_pass.set_pipeline(&self.simulation_pipeline);
             compute_pass.set_bind_group(0, &self.simulation_bind_group, &[]);
-            compute_pass.set_push_constants(0, self.settings.as_bytes());
+            compute_pass.set_push_constants(0, params.as_bytes());
             compute_pass.dispatch((N_TRACERS / 32) as u32, 1, 1);
         }
 
@@ -379,7 +406,7 @@ impl Game {
             0,
             &self.buffers.image_input,
             0,
-            (self.settings.width * self.settings.height * 4) as u64,
+            (self.width * self.height * 4) as u64,
         );
 
         {
@@ -388,8 +415,8 @@ impl Game {
             });
             compute_pass.set_pipeline(&self.diffusion_pipeline);
             compute_pass.set_bind_group(0, &self.diffusion_bind_group, &[]);
-            compute_pass.set_push_constants(0, self.settings.as_bytes());
-            compute_pass.dispatch(self.settings.width / 32, self.settings.height / 32, 1);
+            compute_pass.set_push_constants(0, params.as_bytes());
+            compute_pass.dispatch(self.width / 32, self.height / 32, 1);
         }
 
         encoder.copy_buffer_to_buffer(
@@ -397,7 +424,7 @@ impl Game {
             0,
             &self.buffers.image_input,
             0,
-            (self.settings.width * self.settings.height * 4) as u64,
+            (self.width * self.height * 4) as u64,
         );
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));

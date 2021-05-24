@@ -32,6 +32,7 @@ layout (push_constant) uniform Settings
     float entropy;
     uint width;
     uint height;
+    uint time;
 } constants;
 
 // Hash function www.cs.ubc.ca/~rbridson/docs/schechter-sca08-turbulence.pdf
@@ -75,6 +76,12 @@ void main() {
     t.x += sin(t.angle) * constants.speed;
     t.y += cos(t.angle) * constants.speed;
 
+
+	float r1 = scaleToRange01(hash(uint(t.x) * constants.height + uint(t.y) + hash(i + constants.time * 100000))) * constants.entropy;
+	float r2 = scaleToRange01(hash(5000 + uint(t.x) * constants.height + uint(t.y) + hash(i + constants.time * 100000))) * constants.entropy;
+	float r3 = scaleToRange01(hash(10000 + uint(t.x) * constants.height + uint(t.y) + hash(i + constants.time * 100000))) * constants.entropy;
+
+
     if (t.x >= constants.width - 1 || t.x < 0) {
         t.angle = 2. * 3.14 - t.angle;
         t.x += sin(t.angle) * constants.speed;
@@ -84,9 +91,9 @@ void main() {
         t.y += cos(t.angle) * constants.speed;
     }
 
-    float v_left   = get_sample(t.x, t.y, t.angle - constants.sensor_angle);
-    float v_center = get_sample(t.x, t.y, t.angle);
-    float v_right  = get_sample(t.x, t.y, t.angle + constants.sensor_angle);
+    float v_left   = get_sample(t.x, t.y, t.angle - constants.sensor_angle) + r1;
+    float v_center = get_sample(t.x, t.y, t.angle) + r2;
+    float v_right  = get_sample(t.x, t.y, t.angle + constants.sensor_angle) + r3;
 
     if (v_center >= v_left && v_center >= v_right) {
         // do nothing
