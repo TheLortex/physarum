@@ -1,8 +1,47 @@
 use rand::Rng;
 use std::rc::Rc;
 use wgpu::util::DeviceExt;
+use zerocopy::AsBytes;
 
 use super::gpu;
+
+#[repr(C)]
+#[derive(Copy, Clone, zerocopy::AsBytes)]
+struct Settings {
+    speed: f32,
+    sensor_angle: f32,
+    sensor_distance: f32,
+    sensor_size: u32,
+    rotation_speed: f32,
+    decay_ratio: f32,
+    diffusion_ratio: f32,
+    entropy: f32,
+    width: u32,
+    height: u32,
+}
+
+impl Settings {
+    fn size() -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            speed: 1.,
+            sensor_angle: 0.5,
+            sensor_distance: 5.,
+            sensor_size: 1,
+            rotation_speed: 0.5,
+            decay_ratio: 0.01,
+            diffusion_ratio: 0.1,
+            entropy: 0.,
+            width: 0,
+            height: 0,
+        }
+    }
+}
 
 pub struct Game {
     gpu: Rc<gpu::Gpu>,
@@ -11,8 +50,7 @@ pub struct Game {
     diffusion_pipeline: wgpu::ComputePipeline,
     diffusion_bind_group: wgpu::BindGroup,
     pub buffers: GameBuffers,
-    width: usize,
-    height: usize,
+    settings: Settings,
 }
 
 fn load_compute_shader(
@@ -32,10 +70,9 @@ fn load_compute_shader(
     })
 }
 
-const N_TRACERS: usize = 2_000_000;
+const N_TRACERS: usize = 500_000;
 
 pub struct GameBuffers {
-    size: wgpu::Buffer,
     state: wgpu::Buffer,
     image_input: wgpu::Buffer,
     image_output: wgpu::Buffer,
@@ -44,24 +81,17 @@ pub struct GameBuffers {
 
 impl GameBuffers {
     fn new(gpu: &gpu::Gpu, width: usize, height: usize) -> Self {
-        let size = gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Height Buffer"),
-                contents: bytemuck::cast_slice(&[height as u32, width as u32]),
-                usage: wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST,
-            });
-
         // initial state
         let data = {
             let mut data = Vec::new();
             let mut rng = rand::thread_rng();
             for _ in 0..N_TRACERS {
-                data.push(Tracer {
-                    x: rng.gen_range(10..(width - 10)) as f32,
-                    y: rng.gen_range(10..(height - 10)) as f32,
-                    angle: rng.gen_range((0.)..(2. * 3.14)),
-                })
+                let angle = rng.gen_range((0.)..(2. * 3.14)) as f32;
+                let distance = rng.gen_range((100.)..(400.)) as f32;
+                let x = (width / 2) as f32 + distance * angle.sin();
+                let y = (height / 2) as f32 + distance * angle.cos();
+
+                data.push(Tracer { x, y, angle })
             }
             data
         };
@@ -97,7 +127,6 @@ impl GameBuffers {
         });
 
         GameBuffers {
-            size,
             state,
             image_input,
             image_output,
@@ -138,7 +167,7 @@ impl Game {
                             binding: 0,
                             visibility: wgpu::ShaderStage::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
                                 has_dynamic_offset: false,
                                 min_binding_size: None,
                             },
@@ -148,16 +177,6 @@ impl Game {
                             binding: 1,
                             visibility: wgpu::ShaderStage::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStage::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Storage { read_only: false },
                                 has_dynamic_offset: false,
                                 min_binding_size: None,
@@ -165,7 +184,7 @@ impl Game {
                             count: None,
                         },
                         wgpu::BindGroupLayoutEntry {
-                            binding: 3,
+                            binding: 2,
                             visibility: wgpu::ShaderStage::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -182,7 +201,10 @@ impl Game {
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Compute pipeline layout"),
                     bind_group_layouts: &[&compute_bind_group_layout],
-                    push_constant_ranges: &[],
+                    push_constant_ranges: &[wgpu::PushConstantRange {
+                        range: 0..(Settings::size() as u32),
+                        stages: wgpu::ShaderStage::COMPUTE,
+                    }],
                 });
 
         let compute_pipeline =
@@ -199,18 +221,14 @@ impl Game {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: buffers.size.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
                     resource: buffers.image_input.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 2,
+                    binding: 1,
                     resource: buffers.image_output.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 3,
+                    binding: 2,
                     resource: buffers.render.as_entire_binding(),
                 },
             ],
@@ -242,7 +260,7 @@ impl Game {
                             binding: 0,
                             visibility: wgpu::ShaderStage::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
                                 has_dynamic_offset: false,
                                 min_binding_size: None,
                             },
@@ -276,15 +294,15 @@ impl Game {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: buffers.size.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
                     resource: buffers.state.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 2,
+                    binding: 1,
                     resource: buffers.image_input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: buffers.image_output.as_entire_binding(),
                 },
             ],
             layout: &compute_bind_group_layout,
@@ -295,7 +313,10 @@ impl Game {
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Compute pipeline layout"),
                     bind_group_layouts: &[&compute_bind_group_layout],
-                    push_constant_ranges: &[],
+                    push_constant_ranges: &[wgpu::PushConstantRange {
+                        range: 0..(Settings::size() as u32),
+                        stages: wgpu::ShaderStage::COMPUTE,
+                    }],
                 });
 
         let compute_pipeline =
@@ -318,6 +339,12 @@ impl Game {
 
         let (diffusion_pipeline, diffusion_bind_group) = Self::get_diffusion_shader(&gpu, &buffers);
 
+        let settings = Settings {
+            width: width as u32,
+            height: height as u32,
+            ..Settings::default()
+        };
+
         Self {
             gpu,
             simulation_pipeline,
@@ -325,8 +352,7 @@ impl Game {
             diffusion_pipeline,
             diffusion_bind_group,
             buffers,
-            width,
-            height,
+            settings,
         }
     }
 
@@ -340,19 +366,12 @@ impl Game {
 
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Compute pass"),
+                label: Some("Compute simulation pass"),
             });
             compute_pass.set_pipeline(&self.simulation_pipeline);
             compute_pass.set_bind_group(0, &self.simulation_bind_group, &[]);
+            compute_pass.set_push_constants(0, self.settings.as_bytes());
             compute_pass.dispatch((N_TRACERS / 32) as u32, 1, 1);
-        }
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Compute pass"),
-            });
-            compute_pass.set_pipeline(&self.diffusion_pipeline);
-            compute_pass.set_bind_group(0, &self.diffusion_bind_group, &[]);
-            compute_pass.dispatch((self.width / 32) as u32, (self.height / 32) as u32, 1);
         }
 
         encoder.copy_buffer_to_buffer(
@@ -360,7 +379,25 @@ impl Game {
             0,
             &self.buffers.image_input,
             0,
-            (self.width * self.height * 4) as u64,
+            (self.settings.width * self.settings.height * 4) as u64,
+        );
+
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute diffusion pass"),
+            });
+            compute_pass.set_pipeline(&self.diffusion_pipeline);
+            compute_pass.set_bind_group(0, &self.diffusion_bind_group, &[]);
+            compute_pass.set_push_constants(0, self.settings.as_bytes());
+            compute_pass.dispatch(self.settings.width / 32, self.settings.height / 32, 1);
+        }
+
+        encoder.copy_buffer_to_buffer(
+            &self.buffers.image_output,
+            0,
+            &self.buffers.image_input,
+            0,
+            (self.settings.width * self.settings.height * 4) as u64,
         );
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));

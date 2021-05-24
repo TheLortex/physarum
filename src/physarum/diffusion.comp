@@ -2,22 +2,31 @@
 
 layout (local_size_x = 32, local_size_y = 32) in;
 
-layout (set = 0, binding = 0) readonly uniform Size { 
-    uint h;
-    uint w;
-} size;
-
-layout (set = 0, binding = 1) readonly buffer ImageI {
+layout (set = 0, binding = 0) readonly buffer ImageI {
     float v[];
  } image_input;
 
-layout (set = 0, binding = 2) writeonly buffer ImageO {
+layout (set = 0, binding = 1) writeonly buffer ImageO {
     float v[];
  } image_output;
 
-layout (set = 0, binding = 3) writeonly buffer Render {
+layout (set = 0, binding = 2) writeonly buffer Render {
     uint v[];
  } render;
+
+layout (push_constant) uniform Settings
+{
+    float speed;
+    float sensor_angle;
+    float sensor_distance;
+    uint sensor_size;
+    float rotation_speed;
+    float decay_ratio;
+    float diffusion_ratio;
+    float entropy;
+    uint width;
+    uint height;
+} constants;
 
 
 void main() {
@@ -28,17 +37,15 @@ void main() {
 
     float t = 0;
 
-    t += image_input.v[size.h * (x - 1) + y - 1] + image_input.v[size.h * x + y - 1] + image_input.v[size.h * (x + 1) + y - 1];
-    t += image_input.v[size.h * (x - 1) + y    ] +                                     image_input.v[size.h * (x + 1) + y    ];
-    t += image_input.v[size.h * (x - 1) + y + 1] + image_input.v[size.h * x + y + 1] + image_input.v[size.h * (x + 1) + y + 1];
+    t += image_input.v[constants.height * (x - 1) + y - 1] + image_input.v[constants.height * x + y - 1] + image_input.v[constants.height * (x + 1) + y - 1];
+    t += image_input.v[constants.height * (x - 1) + y    ] +                                     image_input.v[constants.height * (x + 1) + y    ];
+    t += image_input.v[constants.height * (x - 1) + y + 1] + image_input.v[constants.height * x + y + 1] + image_input.v[constants.height * (x + 1) + y + 1];
 
-    float v = image_input.v[size.h * x + y] * 0.945 + t * 0.05 / 8.;
+    float v = (image_input.v[constants.height * x + y] * (1 - constants.diffusion_ratio) + t * constants.diffusion_ratio / 8.) * (1 - constants.decay_ratio);
 
-
-
-    image_output.v[size.h * x + y] = v;
+    image_output.v[constants.height * x + y] = v;
 
     uint u = uint(v * 256.);
 
-    render.v[size.h * x + y] = 255 * 256 * 256 * 256 + u * 256 * 256 + u * 256 + u;
+    render.v[constants.height * x + y] = 255 * 256 * 256 * 256 + u * 256 * 256 + u * 256 + u;
 }

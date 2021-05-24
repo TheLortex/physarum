@@ -2,24 +2,17 @@
 
 layout (local_size_x = 32) in;
 
-float speed = 1;
-
 struct Tracer {
     float x;
     float y;
     float angle;
 };
 
-layout (set = 0, binding = 0) readonly uniform Size { 
-    uint h;
-    uint w;
-} size;
-
-layout (set = 0, binding = 1) buffer State {
+layout (set = 0, binding = 0) buffer State {
     Tracer v[];
 } state;
 
-layout (set = 0, binding = 2) readonly buffer ImageI {
+layout (set = 0, binding = 1) readonly buffer ImageI {
     float v[];
  } image_input;
 
@@ -27,47 +20,85 @@ layout (set = 0, binding = 2) writeonly buffer ImageO {
     float v[];
  } image_output;
 
+layout (push_constant) uniform Settings
+{
+    float speed;
+    float sensor_angle;
+    float sensor_distance;
+    uint sensor_size;
+    float rotation_speed;
+    float decay_ratio;
+    float diffusion_ratio;
+    float entropy;
+    uint width;
+    uint height;
+} constants;
 
-const float delta_capteur = 1.0;
-const float distance_capteur = 10.0;
+// Hash function www.cs.ubc.ca/~rbridson/docs/schechter-sca08-turbulence.pdf
+uint hash(uint state)
+{
+    state ^= 2747636419u;
+    state *= 2654435769u;
+    state ^= state >> 16;
+    state *= 2654435769u;
+    state ^= state >> 16;
+    state *= 2654435769u;
+    return state;
+}
+
+float scaleToRange01(uint state)
+{
+    return state / 4294967295.0;
+}
 
 float get_sample(float x, float y, float angle) {
-    float vx = x + sin(angle) * distance_capteur;
-    float vy = y + cos(angle) * distance_capteur;
-    return image_input.v[size.h * uint(vx) + uint(vy)];
+    int vx = int(x + sin(angle) * constants.sensor_distance);
+    int vy = int(y + cos(angle) * constants.sensor_distance);
+
+    int sensor_size = int(constants.sensor_size);
+
+    float sum = 0;
+	for (int offsetX = -sensor_size; offsetX <= sensor_size; offsetX ++) {
+		for (int offsetY = -sensor_size; offsetY <= sensor_size; offsetY ++) {
+
+			sum += image_input.v[constants.height * uint(vx + offsetX) + uint(vy + offsetY)];
+		}
+	}
+
+    return sum;
 }
 
 void main() {
     // UPDATE 
     uint i = gl_GlobalInvocationID.x;
     Tracer t = state.v[i];
-    t.x += sin(t.angle) * speed;
-    t.y += cos(t.angle) * speed;
+    t.x += sin(t.angle) * constants.speed;
+    t.y += cos(t.angle) * constants.speed;
 
-    if (t.x >= size.w - 1 || t.x < 0) {
+    if (t.x >= constants.width - 1 || t.x < 0) {
         t.angle = 2. * 3.14 - t.angle;
-        t.x += sin(t.angle) * speed;
+        t.x += sin(t.angle) * constants.speed;
     }
-    if (t.y >= size.h - 1 || t.y < 0) {
+    if (t.y >= constants.height - 1 || t.y < 0) {
         t.angle = 3.14 - t.angle;
-        t.y += cos(t.angle) * speed;
+        t.y += cos(t.angle) * constants.speed;
     }
 
-    float v_left   = get_sample(t.x, t.y, t.angle - delta_capteur);
+    float v_left   = get_sample(t.x, t.y, t.angle - constants.sensor_angle);
     float v_center = get_sample(t.x, t.y, t.angle);
-    float v_right  = get_sample(t.x, t.y, t.angle + delta_capteur);
+    float v_right  = get_sample(t.x, t.y, t.angle + constants.sensor_angle);
 
-    if (v_center > v_left && v_center > v_right) {
+    if (v_center >= v_left && v_center >= v_right) {
         // do nothing
-    } else if (v_left > v_right) {
+    } else if (v_left >= v_right) {
         // turn left
-        t.angle    -= 0.1;
+        t.angle    -= constants.rotation_speed;
     } else {
         // turn right
-        t.angle    += 0.1;
+        t.angle    += constants.rotation_speed;
     }
 
     state.v[i] = t;
 
-    image_output.v[size.h * uint(t.x) + uint(t.y)] = 1.0;
+    image_output.v[constants.height * uint(t.x) + uint(t.y)] = 1.0;
 }
