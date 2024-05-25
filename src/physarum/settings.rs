@@ -16,14 +16,14 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            speed: 1.,
+            speed: 1.5,
             sensor_angle: 1.0,
             sensor_distance: 25.,
             sensor_size: 1,
-            rotation_speed: 0.1,
+            rotation_speed: 0.05,
             decay_ratio: 0.01,
             diffusion_ratio: 0.1,
-            entropy: 0.1,
+            entropy: 0.2,
         }
     }
 }

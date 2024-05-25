@@ -1,13 +1,12 @@
 use std::rc::Rc;
-use wgpu::util::DeviceExt;
+use wgpu::{util::DeviceExt, BlendState, PipelineCompilationOptions};
 use winit::event::WindowEvent;
 
 use super::gpu;
 
-pub struct State {
-    gpu: Rc<gpu::Gpu>,
-    sc_desc: wgpu::SwapChainDescriptor,
-    swap_chain: wgpu::SwapChain,
+pub struct State<'surface> {
+    gpu: Rc<gpu::Gpu<'surface>>,
+    sc_desc: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
     camera: Camera,
     uniforms: Uniforms,
@@ -40,21 +39,27 @@ fn min(a: f32, b: f32) -> f32 {
     }
 }
 
-impl State {
+impl<'surface> State<'surface> {
     pub fn new(
-        gpu: Rc<gpu::Gpu>,
+        gpu: Rc<gpu::Gpu<'surface>>,
         physicalsize: winit::dpi::PhysicalSize<u32>,
         width: usize,
         height: usize,
     ) -> Self {
-        let sc_desc = wgpu::SwapChainDescriptor {
-            usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
-            format: gpu.adapter.get_swap_chain_preferred_format(&gpu.surface),
+        log::info!("Creating State");
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+
+        let sc_desc = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
             width: physicalsize.width,
             height: physicalsize.height,
             present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            desired_maximum_frame_latency: 2,
+            view_formats: vec![format],
         };
-        let swap_chain = gpu.device.create_swap_chain(&gpu.surface, &sc_desc);
+        gpu.surface.configure(&gpu.device, &sc_desc);
 
         let vs_src = include_str!("shader.vert");
         let fs_src = include_str!("shader.frag");
@@ -82,20 +87,17 @@ impl State {
         let vs_data = wgpu::util::make_spirv(vs_spirv.as_binary_u8());
         let fs_data = wgpu::util::make_spirv(fs_spirv.as_binary_u8());
 
-        let flags = wgpu::ShaderFlags::default();
         let vs_module = gpu
             .device
-            .create_shader_module(&wgpu::ShaderModuleDescriptor {
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Vertex Shader"),
                 source: vs_data,
-                flags,
             });
         let fs_module = gpu
             .device
-            .create_shader_module(&wgpu::ShaderModuleDescriptor {
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Fragment Shader"),
                 source: fs_data,
-                flags,
             });
 
         let camera = Camera {
@@ -115,7 +117,7 @@ impl State {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Uniform Buffer"),
                 contents: bytemuck::cast_slice(&[uniforms]),
-                usage: wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
         let uniform_bind_group_layout =
@@ -123,7 +125,7 @@ impl State {
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     entries: &[wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStage::VERTEX,
+                        visibility: wgpu::ShaderStages::VERTEX,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -145,7 +147,7 @@ impl State {
         let texture_size = wgpu::Extent3d {
             width: width as u32,
             height: height as u32,
-            depth: 1,
+            depth_or_array_layers: 1,
         };
 
         let diffuse_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -158,8 +160,9 @@ impl State {
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
             // SAMPLED tells wgpu that we want to use this texture in shaders
             // COPY_DST means that we want to copy data to this texture
-            usage: wgpu::TextureUsage::SAMPLED | wgpu::TextureUsage::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             label: Some("diffuse_texture"),
+            view_formats: &[],
         });
 
         //let diffuse_rgba = {
@@ -206,7 +209,7 @@ impl State {
                     entries: &[
                         wgpu::BindGroupLayoutEntry {
                             binding: 0,
-                            visibility: wgpu::ShaderStage::FRAGMENT,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
                             ty: wgpu::BindingType::Texture {
                                 multisampled: false,
                                 view_dimension: wgpu::TextureViewDimension::D2,
@@ -216,11 +219,8 @@ impl State {
                         },
                         wgpu::BindGroupLayoutEntry {
                             binding: 1,
-                            visibility: wgpu::ShaderStage::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler {
-                                comparison: false,
-                                filtering: true,
-                            },
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                             count: None,
                         },
                     ],
@@ -256,30 +256,34 @@ impl State {
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Render Pipeline"),
                 layout: Some(&render_pipeline_layout),
+                multiview: None,
                 vertex: wgpu::VertexState {
                     module: &vs_module,
                     entry_point: "main", // 1.
                     buffers: &[],        // 2.
+                    compilation_options: PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
                     // 3.
                     module: &fs_module,
                     entry_point: "main",
-                    targets: &[wgpu::ColorTargetState {
+                    targets: &[Some(wgpu::ColorTargetState {
                         // 4.
                         format: sc_desc.format,
-                        alpha_blend: wgpu::BlendState::REPLACE,
-                        color_blend: wgpu::BlendState::REPLACE,
-                        write_mask: wgpu::ColorWrite::ALL,
-                    }],
+                        blend: Some(BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: PipelineCompilationOptions::default(),
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList, // 1.
                     strip_index_format: None,
                     front_face: wgpu::FrontFace::Ccw, // 2.
-                    cull_mode: wgpu::CullMode::Back,
+                    cull_mode: Some(wgpu::Face::Back),
                     // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
                     polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
                 },
                 depth_stencil: None, // 1.
                 multisample: wgpu::MultisampleState {
@@ -293,7 +297,6 @@ impl State {
             size: physicalsize,
             gpu,
             sc_desc,
-            swap_chain,
             render_pipeline,
             camera,
             uniforms,
@@ -310,13 +313,11 @@ impl State {
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        log::info!("Resizing to {:?}", new_size);
         self.size = new_size;
         self.sc_desc.width = self.size.width;
         self.sc_desc.height = self.size.height;
-        self.swap_chain = self
-            .gpu
-            .device
-            .create_swap_chain(&self.gpu.surface, &self.sc_desc);
+        self.gpu.surface.configure(&self.gpu.device, &self.sc_desc);
     }
 
     pub fn input(&mut self, _event: &WindowEvent) -> bool {
@@ -324,6 +325,7 @@ impl State {
     }
 
     pub fn update(&mut self) {
+        log::info!("Updating");
         self.camera = Camera {
             ofsx: self.ofsx,
             ofsy: self.ofsy,
@@ -339,6 +341,7 @@ impl State {
     }
 
     pub fn zoom(&mut self, delta: f32) {
+        log::info!("Zooming by {}", delta);
         self.zoom += delta / 3.;
 
         if self.zoom < 0.95 {
@@ -360,8 +363,14 @@ impl State {
         self.ofsy = max(-1. + zoomd, self.ofsy);
         self.ofsy = min(1. - zoomd, self.ofsy);
     }
-    pub fn render(&mut self) -> Result<(), wgpu::SwapChainError> {
-        let frame = self.swap_chain.get_current_frame()?.output;
+
+    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        log::info!("Rendering");
+        let frame = self.gpu.surface.get_current_texture()?;
+
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self
             .gpu
@@ -373,8 +382,8 @@ impl State {
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
-                color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
-                    attachment: &frame.view,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -383,10 +392,12 @@ impl State {
                             b: 0.3,
                             a: 1.0,
                         }),
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     },
-                }],
+                })],
                 depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
@@ -396,8 +407,12 @@ impl State {
             render_pass.draw(0..6, 0..1);
         }
 
+        log::info!("Submitting");
         // submit will accept anything that implements IntoIter
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        log::info!("Submitted");
+
+        frame.present();
 
         Ok(())
     }
@@ -405,23 +420,24 @@ impl State {
     pub fn write(&self, fb: &[u8]) {
         self.gpu.queue.write_texture(
             // Tells wgpu where to copy the pixel data
-            wgpu::TextureCopyView {
+            wgpu::ImageCopyTexture {
                 texture: &self.diffuse_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
             // The actual pixel data
             fb,
             // The layout of the texture
-            wgpu::TextureDataLayout {
+            wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: 4 * self.width as u32,
-                rows_per_image: self.height as u32,
+                bytes_per_row: Some(4 * self.width as u32),
+                rows_per_image: Some(self.height as u32),
             },
             wgpu::Extent3d {
                 width: self.width as u32,
                 height: self.height as u32,
-                depth: 1,
+                depth_or_array_layers: 1,
             },
         );
     }

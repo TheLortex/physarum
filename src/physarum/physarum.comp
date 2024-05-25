@@ -1,6 +1,6 @@
 #version 430
 
-layout (local_size_x = 32) in;
+layout (local_size_x = 256) in;
 
 struct Tracer {
     float x;
@@ -16,7 +16,7 @@ layout (set = 0, binding = 1) readonly buffer ImageI {
     float v[];
  } image_input;
 
-layout (set = 0, binding = 2) writeonly buffer ImageO {
+layout (set = 0, binding = 2) buffer ImageO {
     float v[];
  } image_output;
 
