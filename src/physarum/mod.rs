@@ -82,7 +82,9 @@ const N_TRACERS: usize = 2_000_000;
 pub struct GameBuffers {
     state: wgpu::Buffer,
     image_input: wgpu::Buffer,
+    image_input_hue: wgpu::Buffer,
     image_output: wgpu::Buffer,
+    image_output_hue: wgpu::Buffer,
     pub render: wgpu::Buffer,
 }
 
@@ -98,8 +100,9 @@ impl GameBuffers {
                 let distance = rng.gen_range((100.)..(700.)) as f32;
                 let x = (width / 2) as f32 + distance * angle.sin();
                 let y = (height / 2) as f32 + distance * angle.cos();
+                let hue = rng.gen_range((0.)..(1.)) as f32;
 
-                data.push(Tracer { x, y, angle })
+                data.push(Tracer { x, y, angle, hue })
             }
             data
         };
@@ -120,8 +123,23 @@ impl GameBuffers {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
+        let image_input_hue = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Image Buffer"),
+                contents: bytemuck::cast_slice(&vec![0 as f32; width * height]),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+
         let image_output = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("image output buffer"),
+            mapped_at_creation: false,
+            size: (width * height * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+
+        let image_output_hue = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("image output hue buffer"),
             mapped_at_creation: false,
             size: (width * height * 4) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
@@ -137,7 +155,9 @@ impl GameBuffers {
         GameBuffers {
             state,
             image_input,
+            image_input_hue,
             image_output,
+            image_output_hue,
             render,
         }
     }
@@ -150,6 +170,7 @@ struct Tracer {
     x: f32,
     y: f32,
     angle: f32,
+    hue: f32,
 }
 
 impl<'surface> Game<'surface> {
@@ -201,6 +222,16 @@ impl<'surface> Game<'surface> {
                             },
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
                     ],
                 });
 
@@ -239,6 +270,10 @@ impl<'surface> Game<'surface> {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: buffers.render.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: buffers.image_input_hue.as_entire_binding(),
                 },
             ],
             layout: &compute_bind_group_layout,
@@ -295,6 +330,26 @@ impl<'surface> Game<'surface> {
                             },
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 4,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
                     ],
                 });
 
@@ -312,6 +367,14 @@ impl<'surface> Game<'surface> {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: buffers.image_output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: buffers.image_output_hue.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: buffers.image_input_hue.as_entire_binding(),
                 },
             ],
             layout: &compute_bind_group_layout,
@@ -404,6 +467,14 @@ impl<'surface> Game<'surface> {
             &self.buffers.image_output,
             0,
             &self.buffers.image_input,
+            0,
+            (self.width * self.height * 4) as u64,
+        );
+
+        encoder.copy_buffer_to_buffer(
+            &self.buffers.image_output_hue,
+            0,
+            &self.buffers.image_input_hue,
             0,
             (self.width * self.height * 4) as u64,
         );

@@ -6,6 +6,7 @@ struct Tracer {
     float x;
     float y;
     float angle;
+    float hue;
 };
 
 layout (set = 0, binding = 0) buffer State {
@@ -19,6 +20,14 @@ layout (set = 0, binding = 1) readonly buffer ImageI {
 layout (set = 0, binding = 2) buffer ImageO {
     float v[];
  } image_output;
+
+layout (set = 0, binding = 3) buffer ImageOH {
+    float v[];
+ } image_output_hue;
+
+layout (set = 0, binding = 4) readonly buffer ImageIH {
+    float v[];
+ } image_input_hue;
 
 layout (push_constant) uniform Settings
 {
@@ -91,6 +100,11 @@ void main() {
         t.y += cos(t.angle) * constants.speed;
     }
 
+    float v = image_input.v[constants.height * uint(t.x) + uint(t.y)];
+    float hue = image_input_hue.v[constants.height * uint(t.x) + uint(t.y)];
+    float hue_closest = t.hue - hue > 0.5 ? hue + 1.0 : (t.hue - hue < -0.5 ? hue - 1.0 : hue);
+    t.hue = mod((v * 0.05) * hue_closest + (1.0 - v * 0.05) * t.hue, 1.0); 
+
     float v_left   = get_sample(t.x, t.y, t.angle - constants.sensor_angle) + r1;
     float v_center = get_sample(t.x, t.y, t.angle) + r2;
     float v_right  = get_sample(t.x, t.y, t.angle + constants.sensor_angle) + r3;
@@ -108,4 +122,5 @@ void main() {
     state.v[i] = t;
 
     image_output.v[constants.height * uint(t.x) + uint(t.y)] = 1.0;
+    image_output_hue.v[constants.height * uint(t.x) + uint(t.y)] = t.hue;
 }
